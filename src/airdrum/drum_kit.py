@@ -1,19 +1,21 @@
-"""Drum pad layout, in normalized (0-1) screen coordinates.
+"""Drum pad layout in normalized (0-1) screen coordinates.
 
-Arranged like a real 8-piece kit seen from the player's point of view,
-matching a standard kit diagram:
+8-piece kit arranged from the drummer's point of view (standard acoustic layout):
 
-    Crash    Tom1    Tom2    Ride
-    Hi-Hat        Snare      Floor Tom
-                  Kick
+    Crash     Tom1     Tom2     Ride
+    Hi-Hat         Snare        Floor Tom
+                   Kick
 
-All rings are spaced so none overlap (checked: every pairwise center
-distance > sum of the two radii, with margin).
+This matches a common beginner-to-intermediate kit and gives enough
+voices for real practice patterns without overcrowding the camera view.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+
+import cv2
+import numpy as np
 
 
 @dataclass
@@ -26,16 +28,16 @@ class Pad:
     label: str
 
 
-# BGR colors (OpenCV convention), chosen to roughly match a typical kit diagram
+# BGR colors chosen for good contrast against typical indoor webcam backgrounds
 PADS: list[Pad] = [
-    Pad("crash", 0.24, 0.12, 0.075, (35, 166, 245), "Crash"),        # gold
-    Pad("tom1", 0.40, 0.30, 0.075, (178, 58, 124), "Tom 1"),         # purple
-    Pad("tom2", 0.60, 0.30, 0.075, (196, 181, 45), "Tom 2"),         # teal
-    Pad("ride", 0.78, 0.14, 0.08, (35, 166, 245), "Ride"),           # gold
-    Pad("hihat", 0.16, 0.46, 0.075, (35, 166, 245), "Hi-Hat"),       # gold
-    Pad("snare", 0.47, 0.49, 0.085, (42, 42, 231), "Snare"),         # red
-    Pad("floor_tom", 0.80, 0.52, 0.09, (72, 161, 76), "Floor Tom"),  # green
-    Pad("kick", 0.47, 0.80, 0.11, (140, 140, 140), "Kick"),          # gray
+    Pad("crash",     0.22, 0.13, 0.078, (30, 180, 255), "Crash"),
+    Pad("tom1",      0.40, 0.28, 0.072, (180, 60, 140), "Tom 1"),
+    Pad("tom2",      0.60, 0.28, 0.072, (200, 180, 40), "Tom 2"),
+    Pad("ride",      0.80, 0.15, 0.082, (30, 180, 255), "Ride"),
+    Pad("hihat",     0.15, 0.45, 0.072, (40, 200, 255), "Hi-Hat"),
+    Pad("snare",     0.48, 0.50, 0.088, (40, 40, 240),  "Snare"),
+    Pad("floor_tom", 0.82, 0.52, 0.092, (70, 170, 80),  "Floor Tom"),
+    Pad("kick",      0.48, 0.82, 0.115, (160, 160, 160), "Kick"),
 ]
 
 
@@ -47,18 +49,49 @@ def pad_by_id(pad_id: str) -> Pad | None:
 
 
 def detect_pad_hit(nx: float, ny: float) -> Pad | None:
-    """Given a normalized point, return the *nearest* pad whose ring contains
-    it (within a little tolerance beyond the drawn radius), or None.
-
-    Picking the nearest (rather than the first match in list order) matters
-    if pads ever get close together again - it avoids one pad silently
-    "stealing" hits meant for its neighbor.
-    """
+    """Return the nearest pad that contains the point (with a small tolerance)."""
     best: Pad | None = None
     best_dist = float("inf")
     for pad in PADS:
-        dx, dy = nx - pad.cx, ny - pad.cy
-        dist = math.hypot(dx, dy)
-        if dist < pad.r * 1.3 and dist < best_dist:
+        dist = math.hypot(nx - pad.cx, ny - pad.cy)
+        if dist < pad.r * 1.35 and dist < best_dist:
             best, best_dist = pad, dist
     return best
+
+
+def draw_pads(frame: np.ndarray, active_pad_ids: set[str] | None = None,
+              pulse_strength: float = 0.0) -> None:
+    """Draw all pads with a more realistic ring + subtle fill look.
+
+    active_pad_ids: pads currently being struck or about to be hit (brighter).
+    pulse_strength: 0..1 extra glow for approaching notes.
+    """
+    h, w = frame.shape[:2]
+    active = active_pad_ids or set()
+
+    for pad in PADS:
+        cx, cy = int(pad.cx * w), int(pad.cy * h)
+        r = int(pad.r * w)
+
+        # subtle filled circle (darker version of the pad color)
+        fill = tuple(max(0, c // 4) for c in pad.color)
+        cv2.circle(frame, (cx, cy), r, fill, -1)
+
+        # main ring
+        thickness = 5 if pad.id in active else 3
+        color = pad.color
+        if pad.id in active or pulse_strength > 0:
+            # brighten a bit
+            color = tuple(min(255, int(c * 1.35)) for c in pad.color)
+            thickness = 6
+
+        cv2.circle(frame, (cx, cy), r, color, thickness)
+
+        # inner highlight ring for depth
+        cv2.circle(frame, (cx, cy), max(4, r - 8), color, 1)
+
+        # label below the pad
+        label = pad.label
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        cv2.putText(frame, label, (cx - tw // 2, cy + r + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
