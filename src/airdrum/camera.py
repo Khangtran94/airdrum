@@ -2,18 +2,17 @@
 
 Works with any device OpenCV can see, including iVCam, which registers
 itself as a normal webcam device on Windows once the desktop client is
-running and the iPhone app is connected.
+running and the iPhone/iPad app is connected.
 """
 from __future__ import annotations
 
 import cv2
 
-# Try these backends in order. DSHOW sometimes can't enumerate devices by
-# index on newer Windows builds (throws a warning and only ever finds index
-# 0), so we fall back to MSMF and then whatever OpenCV picks by default.
+# Prefer DSHOW first — many virtual cameras (iVCam, OBS, etc.) work more
+# reliably with DirectShow than with MSMF on Windows.
 _BACKENDS = [
-    ("MSMF", cv2.CAP_MSMF),
     ("DSHOW", cv2.CAP_DSHOW),
+    ("MSMF", cv2.CAP_MSMF),
     ("ANY", cv2.CAP_ANY),
 ]
 
@@ -36,9 +35,6 @@ def _try_open(index: int, width: int = 1280, height: int = 720):
 def list_cameras(max_index: int = 6) -> list[tuple[int, str]]:
     """Probe device indices 0..max_index and return (index, backend_name)
     pairs for the ones that open and return a real frame.
-
-    Useful the first time you set this up: run this to find which index
-    iVCam registered as, and which backend worked for it.
     """
     available = []
     for i in range(max_index):
@@ -50,7 +46,9 @@ def list_cameras(max_index: int = 6) -> list[tuple[int, str]]:
 
 
 class Camera:
-    def __init__(self, index: int = 0, width: int = 1280, height: int = 720):
+    def __init__(self, index: int = 0, width: int = 1280, height: int = 720,
+                 mirror: bool = True):
+        self.mirror = mirror
         self.cap, backend = _try_open(index, width, height)
         if self.cap is None:
             raise RuntimeError(
@@ -59,13 +57,15 @@ class Camera:
                 f"list available indices, and make sure the iVCam desktop client "
                 f"is running and connected."
             )
-        print(f"Opened camera index {index} using backend {backend}")
+        print(f"Opened camera index {index} using backend {backend}  (mirror={mirror})")
 
     def read(self):
         ok, frame = self.cap.read()
         if not ok:
             return None
-        return cv2.flip(frame, 1)  # mirror, like looking in a mirror
+        if self.mirror:
+            return cv2.flip(frame, 1)  # horizontal flip (selfie / mirror view)
+        return frame
 
     def release(self):
         self.cap.release()
@@ -76,5 +76,4 @@ if __name__ == "__main__":
     found = list_cameras()
     print(f"Available camera indices (index, backend): {found}")
     print("If iVCam isn't showing up, make sure the iVCam desktop app is open "
-          "and your iPhone app is connected over USB/WiFi first.")
-
+          "and your iPhone/iPad app is connected over USB/WiFi first.")

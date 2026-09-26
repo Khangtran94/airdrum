@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-from collections import deque
 
 import cv2
 import numpy as np
@@ -59,11 +58,11 @@ class GameState:
         self.judgments: list[Judgment] = []
 
 
-def run_practice(camera_index: int = 0, show_skeleton: bool = True):
+def run_practice(camera_index: int = 0, show_skeleton: bool = True, mirror: bool = True):
     """Practice mode: no beatmap, no scoring.
     Touch a ring with your fingertip to play its sound (edge-triggered).
     """
-    cam = Camera(index=camera_index)
+    cam = Camera(index=camera_index, mirror=mirror)
     tracker = HandTracker()
     audio = AudioEngine()
 
@@ -121,14 +120,14 @@ def run_practice(camera_index: int = 0, show_skeleton: bool = True):
 
 
 def run(camera_index: int = 0, bpm: float = 100.0, bars: int = 64,
-        show_skeleton: bool = True, latency: float = 0.0):
+        show_skeleton: bool = True, latency: float = 0.0, mirror: bool = True):
     """Main song mode with falling notes and scoring.
 
     latency: extra seconds added to note target times to compensate for
     camera / iVCam / MediaPipe pipeline delay. Positive values make notes
     feel later (useful when the video feed lags behind real motion).
     """
-    cam = Camera(index=camera_index)
+    cam = Camera(index=camera_index, mirror=mirror)
     tracker = HandTracker()
     audio = AudioEngine()
     state = GameState(bpm)

@@ -9,8 +9,7 @@ def main():
     )
     parser.add_argument(
         "--camera", type=int, default=0,
-        help="Camera device index. Run `python -m airdrum.camera` to list options "
-             "(iVCam is often index 1 or 2)."
+        help="Camera device index. Run `python -m airdrum.camera` to list options."
     )
     parser.add_argument(
         "--bpm", type=float, default=100.0,
@@ -33,12 +32,20 @@ def main():
         help="Latency compensation in seconds (e.g. 0.08 for ~80 ms iVCam delay). "
              "Positive values make notes arrive later relative to your strikes."
     )
+    parser.add_argument(
+        "--no-mirror", action="store_true",
+        help="Disable horizontal flip. Use this with iVCam when the image already "
+             "looks correct in the iVCam window (right hand moves right)."
+    )
     args = parser.parse_args()
+
+    mirror = not args.no_mirror
 
     if args.practice:
         run_practice(
             camera_index=args.camera,
             show_skeleton=not args.no_skeleton,
+            mirror=mirror,
         )
     else:
         run(
@@ -47,6 +54,7 @@ def main():
             bars=args.bars,
             show_skeleton=not args.no_skeleton,
             latency=args.latency,
+            mirror=mirror,
         )
 
 
