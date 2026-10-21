@@ -1,110 +1,110 @@
-# Air Drum
+# Air Drum — rhythm lessons
 
-An air-drumming rhythm game for learning and practicing drums.
-MediaPipe tracks your hands over a webcam (or iPhone/iPad via iVCam).
-You strike downward toward on-screen drum pads in time with falling notes —
-inspired by SongArc and Magic Tiles, but built around a real drum-kit layout.
+A local Python drum-learning game with webcam/iVCam hand tracking, synthesized
+sounds, falling notes, and keyboard input. Start slowly, listen to a pattern,
+then repeat it with a metronome.
 
-## Status: v1.1
-
-- Index fingertip used as the stick tip (no physical stick required yet).
-- 8-piece kit from the **drummer’s point of view** (Crash, Tom 1, Tom 2, Ride, Hi-Hat, Snare, Floor Tom, Kick).
-- Procedurally generated demo beatmap + practice mode.
-- Synthesized drum sounds (no audio files needed).
-- Score, combo, Perfect / Great / Good / Miss feedback, hit flashes.
-- Latency compensation flag for iVCam pipelines.
-
-## Why this kit size?
-
-A classic 5-piece (kick + snare + hi-hat + one or two toms) is too limited for real practice.
-An 8-piece gives you the voices you actually need for most rock / pop / funk grooves and fills while still fitting cleanly in a camera frame. The layout mirrors a real acoustic kit as seen by the player.
-
-## Setup
-
-This project uses [uv](https://docs.astral.sh/uv/).
+## Run
 
 ```bash
-cd airdrum
 uv sync
-```
-
-## Using your iPhone / iPad as the camera (iVCam)
-
-1. Open the iVCam desktop client on your PC and the iVCam app on your phone/tablet and let them connect.
-2. iVCam usually appears as a normal webcam device, but it is often **not** index 0.
-   Find the correct index:
-
-   ```bash
-   uv run python -m airdrum.camera
-   ```
-
-3. Run the game with that index:
-
-   ```bash
-   uv run airdrum --camera 1
-   ```
-
-If notes feel consistently early or late because of the extra camera pipeline delay, add a small latency offset (in seconds):
-
-```bash
-uv run airdrum --camera 1 --latency 0.08
-```
-
-## Controls
-
-- Hold your hands up in frame — a white dot marks each tracked fingertip.
-- Strike **downward** through a drum ring in time with the falling note to score.
-- `q` — quit.
-
-## CLI options
-
-```bash
-uv run airdrum --camera 1 --bpm 110 --bars 100 --latency 0.06 --no-skeleton
+# Listen first (no camera/model required)
+uv run airdrum --keyboard --lesson backbeat --bpm 60 --bars 4 --listen
+# Play the same lesson
+uv run airdrum --keyboard --lesson backbeat --bpm 60 --bars 4
+# Use webcam or iVCam
+uv run airdrum --camera 1 --lesson backbeat --bpm 60 --bars 4 --latency 0.08
+# Unscored camera free-play
 uv run airdrum --practice --camera 1
 ```
 
-| Flag            | Default | Meaning                                              |
-|-----------------|---------|------------------------------------------------------|
-| `--camera`      | 0       | Camera device index                                  |
-| `--bpm`         | 100     | Tempo of the demo beatmap                            |
-| `--bars`        | 64      | Number of notes generated                            |
-| `--latency`     | 0.0     | Compensation for camera / iVCam delay (seconds)      |
-| `--no-skeleton` | off     | Hide full hand skeleton, show only tip marker        |
-| `--practice`    | off     | Free-play mode (touch rings to hear sounds)          |
+Focus the game window for keyboard input. `q` exits. Each scored lesson ends
+automatically after the final note. There is a four-beat count-in.
 
-## Project layout
+| Lesson | What to learn |
+|---|---|
+| `pulse` (default) | Steady quarter-note hi-hat; count 1 2 3 4 |
+| `backbeat` | Kick on 1/3, snare on 2/4 |
+| `rock` | Eighth-note hi-hat plus kick/snare; includes simultaneous notes |
+| `fill` | Snare → high tom → low tom → floor tom |
 
+Try 4–8 bars at 60 BPM, use `--listen`, then play. Increase BPM gradually when
+you can repeat accurately. `--bars` now means **complete four-beat measures**;
+older versions treated it as a note count. Default: 8 bars, 100 BPM.
+
+| Key | Pad |
+|---|---|
+| A | Hi-hat |
+| S | Snare |
+| D | Kick |
+| F | Crash |
+| J / K | High / low tom |
+| L | Floor tom |
+| Space | Ride |
+
+Keyboard works in camera mode too, so D can stand in for a kick pedal.
+OpenCV keyboard events are a basic fallback: they do not reliably capture
+simultaneous key chords. Use sequential lessons first; the rock lesson is best
+with two tracked hands plus the kick key. Keyboard auto-repeat can count as extra
+hits; tap and release.
+
+## Timing and feedback
+
+- PERFECT <70 ms, GREAT <130 ms, GOOD ≤200 ms from the target.
+- Missed notes expire once, even if frames stall, and reset combo.
+- Extra hits reset combo and reduce accuracy.
+- Accuracy = hit notes / (all chart notes + extra hits). During a lesson this
+  grows as you complete the chart; quitting early leaves unfinished notes in it.
+- Final report shows score, max combo, misses, extras, and mean timing error:
+  negative = early, positive = late. It is coverage accuracy, not timing precision.
+- Positive `--latency` subtracts camera input delay from observed strike time;
+  it does not shift the music. Start with 0, then try 0.05–0.12 for iVCam.
+- `--no-metronome` mutes clicks. `--no-skeleton` hides landmarks.
+  `--no-mirror` disables the selfie flip.
+
+## Camera setup
+
+Connect iVCam desktop and phone first, preferably over USB, then scan:
+
+```bash
+uv run python -m airdrum.camera
 ```
-airdrum/
-  pyproject.toml
-  src/airdrum/
-    camera.py         # OpenCV capture wrapper (iVCam friendly)
-    hand_tracker.py   # MediaPipe Hands (Tasks API) → fingertip positions
-    audio_engine.py   # Procedural drum synthesis + pygame.mixer
-    drum_kit.py       # 8-pad layout + hit-test + drawing
-    beatmap.py        # Demo generation + JSON song loader stub
-    game.py           # Main loop, scoring, visuals
-    main.py           # CLI entry point
+
+Use the returned camera index. The first camera run downloads a MediaPipe hand
+model (~8 MB) into `~/.cache/airdrum/`; keyboard mode does not load it.
+Strike downward inside a pad ring. Use good lighting and keep both hands visible.
+The detector resets velocity history after a tracking gap and uses handedness
+rather than detection list order as its hand identity.
+
+## Custom charts
+
+```json
+{"bpm": 80, "notes": [{"beat": 0, "pad": "kick"}, {"beat": 1, "pad": "snare"}]}
 ```
 
-## Framework choice
+```bash
+uv run airdrum --keyboard --song path/to/chart.json
+```
 
-**MediaPipe HandLandmarker** remains the best free, pure-webcam solution for this project in 2026:
-- Accurate 21-landmark tracking
-- Multi-hand support
-- Acceptable latency on ordinary CPUs
-- Already battle-tested for air instruments and gesture control
+Beats are quarter notes from the chart start; fractional beats and simultaneous
+notes are supported. Charts are sorted and validated before opening the camera.
+Use pad IDs `kick`, `snare`, `hihat`, `tom1`, `tom2`, `floor_tom`, `crash`, `ride`.
+BPM range: 30–240. This is a synthesized chart player; it does not load backing
+songs or automatically transcribe music.
 
-Alternatives considered (Leap Motion 2, YOLO pose variants, native iOS Vision/ARKit) either require extra hardware or force a full mobile rewrite. We stay on the current Python + OpenCV + MediaPipe stack for fast iteration while testing with iPhone/iPad via iVCam.
+## Validation
 
-## Known rough edges / next steps
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
+```
 
-- **Strike threshold tuning**: `STRIKE_VELOCITY` in `game.py` is still a fixed constant. A short calibration step (tap along to a metronome) would make it more reliable across different users and camera angles.
-- **Real drumstick tracking**: currently uses the index fingertip. Adding HSV color-blob detection for a bright tip (tape/marker) and fusing it with the hand position is a natural upgrade.
-- **Real songs**: `beatmap.load_beatmap_from_json` is ready. Wire a `--song path.json` flag and start authoring charts.
-- **More practice modes**: metronome, call-and-response patterns, difficulty tiers.
-- **Visual polish**: particle bursts, better pad art, song-selection screen.
+PowerShell: `$env:PYTHONPATH="src"` then `uv run python -m unittest discover -s tests -v`.
+Tests cover missed-note accounting, chords, duplicate hits, timing, bar length,
+and chart validation without camera/audio dependencies.
 
-## License
+## Scope
 
-MIT (or whatever you prefer — currently unlicensed).
+This version trains rhythm, pad familiarity and basic patterns. It cannot assess
+stick grip, rebound, dynamics, foot technique, or acoustic drum sound quality.
+Camera detection and audio latency must be tested on your own hardware. A MIDI
+pad/pedal input and a proper multi-key event loop would be useful next upgrades.

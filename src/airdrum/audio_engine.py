@@ -71,8 +71,13 @@ def _ride(duration: float = 0.85) -> np.ndarray:
 
 class AudioEngine:
     def __init__(self):
-        pygame.mixer.pre_init(frequency=SAMPLE_RATE, size=-16, channels=2)
+        pygame.mixer.pre_init(frequency=SAMPLE_RATE, size=-16, channels=2, buffer=256)
         pygame.mixer.init()
+        pygame.mixer.set_num_channels(32)
+        t = np.arange(int(SAMPLE_RATE * .025)) / SAMPLE_RATE
+        self._clicks = [_to_pygame_sound(np.sin(2 * np.pi * hz * t) * np.exp(-t * 180) * .35) for hz in (1000, 1600)]
+        self._click_channel = pygame.mixer.Channel(0)
+        pygame.mixer.set_reserved(1)
         self._sounds = {
             "kick": _to_pygame_sound(_kick()),
             "snare": _to_pygame_sound(_snare()),
@@ -90,3 +95,9 @@ class AudioEngine:
             sound.play()
         else:
             print(f"[audio] WARNING: no sound registered for '{name}'")
+
+    def click(self, accent=False):
+        self._click_channel.play(self._clicks[int(accent)])
+
+    def close(self):
+        pygame.mixer.quit()

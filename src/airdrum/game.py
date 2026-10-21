@@ -7,10 +7,10 @@ import cv2
 import numpy as np
 
 from .audio_engine import AudioEngine
-from .beatmap import Note, build_demo_beatmap
+from .beatmap import Note, build_lesson, load_beatmap_from_json, LESSONS
+from .rhythm import Session
 from .camera import Camera
 from .drum_kit import PADS, detect_pad_hit, draw_pads, pad_by_id
-from .hand_tracker import HandTracker
 
 # Tunable constants
 STRIKE_VELOCITY = 1.6       # lower = easier to trigger repeated hits
@@ -59,12 +59,12 @@ class GameState:
 
 def _detect_strike(tip_y: float, hs: HandState, now: float) -> bool:
     """Return True if this frame is a downward strike."""
-    if hs.prev_y is None:
+    if hs.prev_y is None or now - hs.prev_t > 0.25:
         hs.prev_y = tip_y
         hs.prev_t = now
         return False
 
-    dt = max(now - hs.prev_t, 1 / 60)
+    dt = max(now - hs.prev_t, 0.001)
     vy = (tip_y - hs.prev_y) / dt
     hs.prev_y = tip_y
     hs.prev_t = now
@@ -82,6 +82,7 @@ def run_practice(camera_index: int = 0, show_skeleton: bool = True, mirror: bool
     motions to trigger the sound repeatedly. No need to leave the ring.
     """
     cam = Camera(index=camera_index, mirror=mirror)
+    from .hand_tracker import HandTracker
     tracker = HandTracker()
     audio = AudioEngine()
     hand_states: dict[int, HandState] = {}
@@ -98,7 +99,7 @@ def run_practice(camera_index: int = 0, show_skeleton: bool = True, mirror: bool
                 print("Camera read failed — check iVCam connection.")
                 break
 
-            now = time.time()
+            now = time.perf_counter()
             h, w = frame.shape[:2]
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             tips, result = tracker.process(frame_rgb)
@@ -142,15 +143,38 @@ def run_practice(camera_index: int = 0, show_skeleton: bool = True, mirror: bool
 
 
 def run(camera_index: int = 0, bpm: float = 100.0, bars: int = 64,
-        show_skeleton: bool = True, latency: float = 0.0, mirror: bool = True):
-    cam = Camera(index=camera_index, mirror=mirror)
-    tracker = HandTracker()
-    audio = AudioEngine()
+        show_skeleton: bool = True, latency: float = 0.0, mirror: bool = True,
+        lesson: str = "pulse", song: str | None = None, keyboard: bool = False,
+        listen: bool = False, metronome: bool = True):
+    # Read/validate charts before opening hardware.
+    if song:
+        bpm, _ = load_beatmap_from_json(song, 0)
+    cam = None
+    tracker = None
+    audio = None
+    try:
+        if not keyboard:
+            from .hand_tracker import HandTracker
+            cam = Camera(index=camera_index, mirror=mirror)
+            tracker = HandTracker()
+        audio = AudioEngine()
+    except Exception:
+        if cam:
+            cam.release()
+        if tracker:
+            tracker.close()
+        raise
     state = GameState(bpm)
     hand_states: dict[int, HandState] = {}
-
-    song_start = time.time() + COUNT_IN + latency
-    notes: list[Note] = build_demo_beatmap(bpm, song_start, bars=bars)
+    song_start = time.perf_counter() + 4 * 60 / bpm
+    notes = load_beatmap_from_json(song, song_start)[1] if song else build_lesson(bpm, song_start, bars, lesson)
+    state.session = Session(notes)
+    next_click = song_start - 4 * 60 / bpm
+    click_index = 0
+    demonstrated = set()
+    key_pads = dict(zip("asdfjkl ", ["hihat", "snare", "kick", "crash", "tom1", "tom2", "floor_tom", "ride"]))
+    print(LESSONS[lesson][0] if not song else f"Chart: {song}")
+    print("Keys: A hi-hat, S snare, D kick, F crash, J/K toms, L floor tom, SPACE ride")
 
     window_name = "Air Drum"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -160,18 +184,31 @@ def run(camera_index: int = 0, bpm: float = 100.0, bars: int = 64,
 
     try:
         while True:
-            frame = cam.read()
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8) if keyboard else cam.read()
             if frame is None:
-                print("Camera read failed — check iVCam connection.")
+                print("Camera read failed — check connection.")
                 break
-
-            now = time.time()
+            now = time.perf_counter()
             h, w = frame.shape[:2]
-
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            tips, result = tracker.process(frame_rgb)
-
-            if show_skeleton:
+            tips, result = ([], None) if keyboard else tracker.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            # Positive latency subtracts observed input delay, without moving the music.
+            if not listen:
+                state.session.expire(now - latency)
+            state.missed_notes = state.session.misses
+            state.combo = state.session.combo
+            if metronome and now >= next_click:
+                audio.click(click_index % 4 == 0)
+                skipped = int((now - next_click) / (60 / bpm)) + 1
+                click_index += skipped
+                next_click += skipped * 60 / bpm
+            if listen:
+                for i, note in enumerate(notes):
+                    if i not in demonstrated and now >= note.time:
+                        if now - note.time < .2:
+                            audio.play(note.pad)
+                            state.flashes.append(Flash(note.pad, now))
+                        demonstrated.add(i)
+            if show_skeleton and tracker:
                 tracker.draw_landmarks(frame, result)
 
             active_pads: set[str] = set()
@@ -180,10 +217,10 @@ def run(camera_index: int = 0, bpm: float = 100.0, bars: int = 64,
                 nx, ny = tip.x, tip.y
                 hs = hand_states.setdefault(tip.hand_id, HandState())
 
-                if _detect_strike(ny, hs, now):
+                if _detect_strike(ny, hs, now) and not listen:
                     pad = detect_pad_hit(nx, ny)
                     if pad:
-                        _register_hit(pad, now, notes, state, audio)
+                        _register_hit(pad, now, notes, state, audio, latency)
                         active_pads.add(pad.id)
 
                 px, py = int(nx * w), int(ny * h)
@@ -203,65 +240,49 @@ def run(camera_index: int = 0, bpm: float = 100.0, bars: int = 64,
             _draw_hud(frame, state, now, song_start)
 
             cv2.imshow(window_name, frame)
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+            if not listen and chr(key) in key_pads:
+                _register_hit(pad_by_id(key_pads[chr(key)]), time.perf_counter(), notes, state, audio, latency)
+            end_time = notes[-1].time + max(60 / bpm, HIT_WINDOW + latency)
+            if now > end_time:
                 break
     finally:
-        cam.release()
-        tracker.close()
+        if cam:
+            cam.release()
+        if tracker:
+            tracker.close()
+        audio.close()
         cv2.destroyAllWindows()
+        session = state.session
+        if listen:
+            print("Demo finished. Replay without --listen to try it yourself.")
+        else:
+            bias = sum(session.errors) / len(session.errors) * 1000 if session.errors else 0
+            print(f"Score: {session.score} | Max combo: {session.max_combo} | Hits: {len(session.errors)} | Misses: {session.misses} | Extra: {session.extra_hits}")
+            print(f"Accuracy: {session.accuracy:.1f}% | Mean timing: {bias:+.0f} ms (+ late / - early)")
+            print("Try a faster BPM when accurate; slow down if timing is inconsistent.")
 
-        total = state.hit_notes + state.missed_notes
-        acc = (state.hit_notes / total * 100) if total else 0
-        print(f"\nSession finished")
-        print(f"  Score      : {state.score}")
-        print(f"  Max combo  : {state.max_combo}")
-        print(f"  Hits / Miss: {state.hit_notes} / {state.missed_notes}")
-        print(f"  Accuracy   : {acc:.1f}%")
 
-
-def _register_hit(pad, now_abs: float, notes: list[Note], state: GameState, audio: AudioEngine):
-    best: Note | None = None
-    best_dt = float("inf")
-    for n in notes:
-        if n.hit or n.pad != pad.id:
-            continue
-        dt = abs(n.time - now_abs)
-        if dt < best_dt:
-            best_dt, best = dt, n
-
+def _register_hit(pad, now_abs: float, notes: list[Note], state: GameState, audio: AudioEngine, latency: float = 0.0):
+    label, error = state.session.strike(pad.id, now_abs - latency)
     audio.play(pad.id)
     state.flashes.append(Flash(pad.id, now_abs))
-
-    px = pad.cx
-    py = pad.cy - 0.08
-
-    if best is not None and best_dt <= HIT_WINDOW:
-        best.hit = True
-        state.hit_notes += 1
-        state.combo += 1
-        state.max_combo = max(state.max_combo, state.combo)
-
-        if best_dt < 0.07:
-            points = 100 + state.combo
-            judge = Judgment("PERFECT", (0, 255, 180), now_abs, px, py)
-        elif best_dt < 0.13:
-            points = 70 + state.combo
-            judge = Judgment("GREAT", (0, 220, 255), now_abs, px, py)
-        else:
-            points = 40 + state.combo
-            judge = Judgment("GOOD", (100, 200, 255), now_abs, px, py)
-
-        state.score += points
-        state.judgments.append(judge)
-    else:
-        state.combo = 0
-        state.judgments.append(Judgment("MISS", (60, 60, 255), now_abs, px, py))
+    state.score = state.session.score
+    state.combo = state.session.combo
+    state.max_combo = state.session.max_combo
+    state.hit_notes = len(state.session.errors)
+    state.missed_notes = state.session.misses
+    color = (0, 255, 180) if error is not None else (60, 60, 255)
+    timing = "" if error is None else f" {error * 1000:+.0f}ms"
+    state.judgments.append(Judgment(label + timing, color, now_abs, pad.cx, pad.cy - .08))
 
 
 def _draw_falling_notes(frame, notes: list[Note], now: float):
     h, w = frame.shape[:2]
     for n in notes:
-        if n.hit:
+        if n.hit or n.missed:
             continue
         time_to_hit = n.time - now
         if time_to_hit > TRAVEL_TIME or time_to_hit < -0.35:
@@ -287,8 +308,6 @@ def _draw_falling_notes(frame, notes: list[Note], now: float):
         cv2.circle(frame, (int(x), int(y)), r, color, -1)
         cv2.circle(frame, (int(x), int(y)), r + 2, (255, 255, 255), 1)
 
-        if time_to_hit < -HIT_WINDOW and not n.missed:
-            n.missed = True
 
 
 def _draw_flashes(frame, flashes: list[Flash], now: float):
@@ -336,8 +355,11 @@ def _draw_hud(frame, state: GameState, now: float, song_start: float):
     cv2.putText(frame, f"BPM {state.bpm:.0f}", (20, 106),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
+    if now < song_start:
+        count = int((song_start - now) / (60 / state.bpm)) + 1
+        cv2.putText(frame, f"GET READY {min(4, count)}", (w // 2 - 140, h // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     elapsed = max(0.0, now - song_start)
-    cv2.putText(frame, f"t={elapsed:.1f}s", (w - 140, 38),
+    cv2.putText(frame, f"{state.session.accuracy:.0f}%  {elapsed:.1f}s", (w - 140, 38),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 1)
-    cv2.putText(frame, "q = quit", (20, h - 24),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (160, 160, 160), 1)
+    cv2.putText(frame, "A:hat S:snare D:kick F:crash J/K:toms L:floor SPACE:ride | q:quit", (20, h - 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
