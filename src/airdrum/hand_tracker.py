@@ -10,6 +10,7 @@ local cache folder; subsequent runs reuse it, no internet needed after that.
 from __future__ import annotations
 
 import urllib.request
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,15 +65,15 @@ class HandTracker:
         list of lists of landmarks (21 per hand), useful for drawing."""
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         # timestamp must be monotonically increasing; ms works fine for VIDEO mode
-        timestamp_ms = self._frame_index * 33  # assume ~30fps spacing; strictly increasing is what matters
-        self._frame_index += 1
+        timestamp_ms = max(self._frame_index + 1, int(time.perf_counter() * 1000))
+        self._frame_index = timestamp_ms
         result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
 
         tips: list[TipPoint] = []
         if result.hand_landmarks:
             for idx, hand_landmarks in enumerate(result.hand_landmarks):
                 lm = hand_landmarks[INDEX_FINGERTIP]
-                tips.append(TipPoint(x=lm.x, y=lm.y, hand_id=idx))
+                tips.append(TipPoint(x=lm.x, y=lm.y, hand_id=0 if result.handedness[idx][0].category_name == "Left" else 1))
         return tips, result
 
     def draw_landmarks(self, frame_bgr, result):
